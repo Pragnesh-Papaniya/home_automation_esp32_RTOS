@@ -1,1 +1,0 @@
-# home_automation_esp32_RTOS
