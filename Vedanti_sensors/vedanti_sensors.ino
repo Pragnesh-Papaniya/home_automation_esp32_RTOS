@@ -41,6 +41,15 @@ void detectMovement(){
   lastTrigger = millis();
 
   Serial.println("Detected");
+
+     currentTime = millis();
+
+  if((startTimer)&&(currentTime - lastTrigger>(timeSeconds*1000))){
+    digitalWrite(buzzer, LOW);
+    Serial.println("Motion Stopped");
+
+    startTimer = false;
+  }
 }
 
 void setup() {
@@ -75,12 +84,5 @@ void setup() {
 }
 
 void loop() {
-   currentTime = millis();
 
-  if((startTimer)&&(currentTime - lastTrigger>(timeSeconds*1000))){
-    digitalWrite(buzzer, LOW);
-    Serial.println("Motion Stopped");
-
-    startTimer = false;
-  }
 }
