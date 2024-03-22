@@ -20,26 +20,30 @@ write following content in it:
 #define DhtPin 15
 #define BuzzPin 23
 
+#include <LiquidCrystal_I2C.h>  // download LCD I2C library first
 #include <DHT.h>
 #include "Adafruit_VL53L0X.h"
 #include <WiFi.h>
 #include "secrets.h"
 #include "ThingSpeak.h"  // always include thingspeak header file after other header files and custom macros
 
-char ssid[] = SECRET_SSID;  // your network SSID (name)
-char pass[] = SECRET_PASS;  // your network password
-int keyIndex = 0;           // your network key Index number (needed only for WEP)
+//first run I2C scanner to know lcd's I2C address
+LiquidCrystal_I2C lcd(0x27, 16, 2);  // Set the LCD address to 0x27 for a 16 chars and 2 line display
+int count = 0;                       // lcd demo counter
+char ssid[] = SECRET_SSID;           // your network SSID (name)
+char pass[] = SECRET_PASS;           // your network password
+int keyIndex = 0;                    // your network key Index number (needed only for WEP)
 
 unsigned long myChannelNumber = SECRET_CH_ID;
 const char *myWriteAPIKey = SECRET_WRITE_APIKEY;
 
 //whatever fields you have to send to thingspeak, make it global so it doesn't go out of scope
-short dist;      //distance by tof sensor
-float temp;      //DHT11
-float humidity;  //DHT11
+short dist;      // distance by TOF sensor
+float temp;      // For DHT11
+float humidity;  // For DHT11
 
 DHT dht(DhtPin, DHT11);
-Adafruit_VL53L0X lox = Adafruit_VL53L0X();
+Adafruit_VL53L0X lox = Adafruit_VL53L0X();  //TOF and LCD have different I2C address
 WiFiClient client;
 
 void IRAM_ATTR FlameIsr();  // Flame Isr declaration.
@@ -47,6 +51,7 @@ void IRAM_ATTR FlameIsr();  // Flame Isr declaration.
 void setup() {  //setup task runs at priority 1
   pinMode(FlamePin, INPUT);
   pinMode(BuzzPin, OUTPUT);
+  lcd.begin();
   dht.begin();
   vTaskDelay(2000 / portTICK_PERIOD_MS);
   Serial.begin(300);
@@ -60,8 +65,9 @@ void setup() {  //setup task runs at priority 1
 
   xTaskCreatePinnedToCore(Task_DHT11, "Task_DHT11", 1024, NULL, 1, NULL, ARDUINO_RUNNING_CORE);
   xTaskCreatePinnedToCore(Task_TOF, "Task_TOF", 2024, NULL, 1, NULL, ARDUINO_RUNNING_CORE);
+  xTaskCreatePinnedToCore(Task_LCD, "Task_LCD", 2024, NULL, 1, NULL, ARDUINO_RUNNING_CORE);
   xTaskCreatePinnedToCore(Task_THINGSPEAK, "Task_THINGSPEAK", 5024, NULL, 1, NULL, ARDUINO_RUNNING_CORE);
-  attachInterrupt(FlamePin, FlameIsr, CHANGE);  //go to isr whenever level changes
+  attachInterrupt(FlamePin, FlameIsr, CHANGE);  // go to isr whenever level changes
 
   // Delete "setup" task
   vTaskDelete(NULL);
@@ -104,7 +110,6 @@ void Task_TOF(void *pvParameters)  // This is a TOF task.
   {
     VL53L0X_RangingMeasurementData_t measure;
 
-    // Serial.print("Reading a measurement... ");
     lox.rangingTest(&measure, false);  // pass in 'true' to get debug data printout!
 
     if (measure.RangeStatus != 4) {  // phase failures have incorrect data
@@ -119,12 +124,20 @@ void Task_TOF(void *pvParameters)  // This is a TOF task.
   }
 }
 
-void IRAM_ATTR FlameIsr()  // flame isr that is to be executed
+void Task_LCD(void *pvParameters)  // This is an LCD task.
 {
-  if ((digitalRead(FlamePin)) == 1) {
-    digitalWrite(BuzzPin, HIGH);
-  } else {
-    digitalWrite(BuzzPin, LOW);
+  (void)pvParameters;
+
+  while (1)  // A Task shall never return or exit.
+  {
+    lcd.clear();  // clear previous values from screen
+    lcd.print("LCD demo");
+    lcd.setCursor(0, 1);
+    lcd.print("Counting:");
+    lcd.setCursor(11, 1);
+    lcd.print(count);
+    count++;
+    vTaskDelay(500 / portTICK_PERIOD_MS);
   }
 }
 
@@ -148,7 +161,7 @@ void Task_THINGSPEAK(void *pvParameters)  // This is a task.
     ThingSpeak.setField(1, temp);
     ThingSpeak.setField(2, humidity);
     ThingSpeak.setField(3, dist);
-    
+
     int x = ThingSpeak.writeFields(myChannelNumber, myWriteAPIKey);
     if (x == 200) {
       Serial.println("Channel update successful.");
@@ -157,5 +170,14 @@ void Task_THINGSPEAK(void *pvParameters)  // This is a task.
     }
 
     vTaskDelay(20000 / portTICK_PERIOD_MS);  // Wait 20 seconds to update the channel again
+  }
+}
+
+void IRAM_ATTR FlameIsr()  // flame isr that is to be executed
+{
+  if ((digitalRead(FlamePin)) == 1) {
+    digitalWrite(BuzzPin, HIGH);
+  } else {
+    digitalWrite(BuzzPin, LOW);
   }
 }
