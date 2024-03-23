@@ -8,6 +8,7 @@ write following content in it:
 #define SECRET_CH_ID 0000000			// replace 0000000 with your channel number
 #define SECRET_WRITE_APIKEY "XYZ"   // replace XYZ with your channel write API Key
 */
+static SemaphoreHandle_t mutex;
 
 #if CONFIG_FREERTOS_UNICORE
 #define ARDUINO_RUNNING_CORE 0
@@ -15,7 +16,6 @@ write following content in it:
 #define ARDUINO_RUNNING_CORE 1
 #endif
 
-#define TS_ENABLE_SSL  // For HTTPS SSL connection
 #define FlamePin 2
 #define DhtPin 15
 #define BuzzPin 23
@@ -29,7 +29,6 @@ write following content in it:
 
 //first run I2C scanner to know lcd's I2C address
 LiquidCrystal_I2C lcd(0x27, 16, 2);  // Set the LCD address to 0x27 for a 16 chars and 2 line display
-int count = 0;                       // lcd demo counter
 char ssid[] = SECRET_SSID;           // your network SSID (name)
 char pass[] = SECRET_PASS;           // your network password
 int keyIndex = 0;                    // your network key Index number (needed only for WEP)
@@ -38,9 +37,9 @@ unsigned long myChannelNumber = SECRET_CH_ID;
 const char *myWriteAPIKey = SECRET_WRITE_APIKEY;
 
 //whatever fields you have to send to thingspeak, make it global so it doesn't go out of scope
-short dist;      // distance by TOF sensor
-float temp;      // For DHT11
-float humidity;  // For DHT11
+unsigned short dist;      // distance by TOF sensor
+unsigned short humidity;  // For DHT11
+unsigned char temp;       // For DHT11
 
 DHT dht(DhtPin, DHT11);
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();  //TOF and LCD have different I2C address
@@ -54,19 +53,15 @@ void setup() {  //setup task runs at priority 1
   lcd.begin();
   dht.begin();
   vTaskDelay(2000 / portTICK_PERIOD_MS);
-  Serial.begin(300);
   WiFi.mode(WIFI_STA);
   ThingSpeak.begin(client);  // Initialize ThingSpeak
 
-  // wait until serial port opens
-  while (!Serial) {
-    vTaskDelay(1 / portTICK_PERIOD_MS);
-  }
+  // Create mutex before starting tasks
+  mutex = xSemaphoreCreateMutex();
 
-  xTaskCreatePinnedToCore(Task_DHT11, "Task_DHT11", 1024, NULL, 1, NULL, ARDUINO_RUNNING_CORE);
+  xTaskCreatePinnedToCore(Task_DHT11, "Task_DHT11", 2024, NULL, 1, NULL, ARDUINO_RUNNING_CORE);
   xTaskCreatePinnedToCore(Task_TOF, "Task_TOF", 2024, NULL, 1, NULL, ARDUINO_RUNNING_CORE);
-  xTaskCreatePinnedToCore(Task_LCD, "Task_LCD", 2024, NULL, 1, NULL, ARDUINO_RUNNING_CORE);
-  xTaskCreatePinnedToCore(Task_THINGSPEAK, "Task_THINGSPEAK", 5024, NULL, 1, NULL, ARDUINO_RUNNING_CORE);
+  xTaskCreatePinnedToCore(Task_THINGSPEAK, "Task_THINGSPEAK", 2024, NULL, 1, NULL, ARDUINO_RUNNING_CORE);
   attachInterrupt(FlamePin, FlameIsr, CHANGE);  // go to isr whenever level changes
 
   // Delete "setup" task
@@ -86,13 +81,22 @@ void Task_DHT11(void *pvParameters)  // This is a DHT task.
   {
     temp = dht.readTemperature();
     humidity = dht.readHumidity();
-    Serial.print("Temp: ");
-    Serial.print(temp);
-    Serial.print("c  ");
-    Serial.print("humidty: ");
-    Serial.print(humidity);
-    Serial.println("%");
-
+    // take mutex before entering critical section of lcd
+    if (xSemaphoreTake(mutex, 0) == pdTRUE) {
+      lcd.setCursor(0, 0);
+      lcd.print("Tmp ");
+      lcd.setCursor(4, 0);
+      lcd.print(temp);
+      lcd.setCursor(6, 0);
+      lcd.print("c  ");
+      lcd.setCursor(8, 0);
+      lcd.print("hmd ");
+      lcd.setCursor(12, 0);
+      lcd.print(humidity);
+      lcd.setCursor(14, 0);
+      lcd.print("%");
+      xSemaphoreGive(mutex);  // give back mutex once task has completed work with critical section
+    }
     vTaskDelay(2000 / portTICK_PERIOD_MS);
   }
 }
@@ -102,8 +106,16 @@ void Task_TOF(void *pvParameters)  // This is a TOF task.
   (void)pvParameters;
 
   if (!lox.begin()) {
-    Serial.println(F("Failed to boot VL53L0X"));
-    while (1) { ; }
+    // take mutex before entering critical section of lcd
+    if (xSemaphoreTake(mutex, 0) == pdTRUE) {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print(F("Failed to"));
+      lcd.setCursor(0, 1);
+      lcd.print(F("boot VL53L0X"));
+      xSemaphoreGive(mutex);  // give back mutex once task has completed work with critical section
+      while (1) { ; }
+    }
   }
 
   while (1)  // A Task shall never return or exit.
@@ -113,49 +125,58 @@ void Task_TOF(void *pvParameters)  // This is a TOF task.
     lox.rangingTest(&measure, false);  // pass in 'true' to get debug data printout!
 
     if (measure.RangeStatus != 4) {  // phase failures have incorrect data
-      Serial.print("Distance (mm): ");
-      dist = measure.RangeMilliMeter;
-      Serial.println(dist);
 
+      // take mutex before entering critical section of lcd
+      if (xSemaphoreTake(mutex, 0) == pdTRUE) {
+        lcd.setCursor(0, 1);
+        lcd.print("Dist (mm): ");
+        dist = measure.RangeMilliMeter;
+        lcd.setCursor(12, 1);
+        lcd.print(dist);
+        xSemaphoreGive(mutex);  // give back mutex once task has completed work with critical section
+      }
     } else {
-      Serial.println(" out of range ");
+      // take mutex before entering critical section of lcd
+      if (xSemaphoreTake(mutex, 0) == pdTRUE) {
+        lcd.print(" out of range ");
+        xSemaphoreGive(mutex);  // give back mutex once task has completed work with critical section
+      }
     }
-    vTaskDelay(100 / portTICK_PERIOD_MS);
+    vTaskDelay(2000 / portTICK_PERIOD_MS);
   }
 }
 
-void Task_LCD(void *pvParameters)  // This is an LCD task.
-{
-  (void)pvParameters;
-
-  while (1)  // A Task shall never return or exit.
-  {
-    lcd.clear();  // clear previous values from screen
-    lcd.print("LCD demo");
-    lcd.setCursor(0, 1);
-    lcd.print("Counting:");
-    lcd.setCursor(11, 1);
-    lcd.print(count);
-    count++;
-    vTaskDelay(500 / portTICK_PERIOD_MS);
-  }
-}
-
-void Task_THINGSPEAK(void *pvParameters)  // This is a task.
+void Task_THINGSPEAK(void *pvParameters)  // This is a thingspeak cloud task.
 {
   (void)pvParameters;
 
   while (1) {
+    // take mutex before entering critical section of lcd
     // Connect or reconnect to WiFi
     if (WiFi.status() != WL_CONNECTED) {
-      Serial.print("Attempting to connect to SSID: ");
-      Serial.println(SECRET_SSID);
+      if (xSemaphoreTake(mutex, 0) == pdTRUE) {
+        lcd.clear();  // clear dht and tof data to see wifi and thingspeak
+        lcd.setCursor(0, 0);
+        lcd.print("connecting to ID");
+        lcd.setCursor(0, 1);
+        lcd.print(SECRET_SSID);
+        vTaskDelay(500 / portTICK_PERIOD_MS);  // Wait .5 seconds to clearly see output
+        lcd.clear();                           // clear lcd again for new data of DHT and TOF
+        xSemaphoreGive(mutex);                 // give back mutex once task has completed work with critical section
+      }
       while (WiFi.status() != WL_CONNECTED) {
         WiFi.begin(ssid, pass);  // Connect to WPA/WPA2 network. Change this line if using open or WEP network
-        Serial.print(".");
         vTaskDelay(5000 / portTICK_PERIOD_MS);
       }
-      Serial.println("\nConnected.");
+      // take mutex before entering critical section of lcd
+      if (xSemaphoreTake(mutex, 0) == pdTRUE) {
+        lcd.clear();  // clear dht and tof data to see wifi and thingspeak
+        lcd.setCursor(0, 0);
+        lcd.print("Connected.");
+        vTaskDelay(500 / portTICK_PERIOD_MS);  // Wait .5 seconds to clearly see output
+        lcd.clear();                           // clear lcd again for new data of DHT and TOF
+        xSemaphoreGive(mutex);                 // give back mutex once task has completed work with critical section
+      }
     }
 
     ThingSpeak.setField(1, temp);
@@ -164,14 +185,35 @@ void Task_THINGSPEAK(void *pvParameters)  // This is a task.
 
     int x = ThingSpeak.writeFields(myChannelNumber, myWriteAPIKey);
     if (x == 200) {
-      Serial.println("Channel update successful.");
+      // take mutex before entering critical section of lcd
+      if (xSemaphoreTake(mutex, 0) == pdTRUE) {
+        lcd.clear();  // clear dht and tof data to see wifi and thingspeak
+        lcd.setCursor(0, 0);
+        lcd.print("Channel updated");
+        lcd.setCursor(0, 1);
+        lcd.print("successfully.");
+        vTaskDelay(500 / portTICK_PERIOD_MS);  // Wait .5 seconds to clearly see output
+        lcd.clear();                           // clear lcd again for new data of DHT and TOF
+        xSemaphoreGive(mutex);                 // give back mutex once task has completed work with critical section
+      }
     } else {
-      Serial.println("Problem updating channel. HTTP error code " + String(x));
+      // take mutex before entering critical section of lcd
+      if (xSemaphoreTake(mutex, 0) == pdTRUE) {
+        lcd.clear();  // clear dht and tof data to see wifi and thingspeak
+        lcd.setCursor(0, 0);
+        lcd.print("Problem updating");
+        lcd.setCursor(0, 1);
+        lcd.print("channel.code" + String(x));
+        vTaskDelay(500 / portTICK_PERIOD_MS);  // Wait .5 seconds to clearly see output
+        lcd.clear();                           // clear lcd again for new data of DHT and TOF
+        xSemaphoreGive(mutex);                 // give back mutex once task has completed work with critical section
+      }
     }
 
     vTaskDelay(20000 / portTICK_PERIOD_MS);  // Wait 20 seconds to update the channel again
   }
 }
+
 
 void IRAM_ATTR FlameIsr()  // flame isr that is to be executed
 {
