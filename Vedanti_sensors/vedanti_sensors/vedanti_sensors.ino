@@ -26,7 +26,7 @@ void measureMoisture(void *parameter){
   }
 }
 
-//Our task: measure soil humidity
+//Our task: measure gas detect
 void gasDetect(void *parameter){
   while(1){
     Serial.println("Gas:");
