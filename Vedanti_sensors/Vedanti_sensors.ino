@@ -1,3 +1,9 @@
+//#include<semphr.h>
+SemaphoreHandle_t xMutex;
+
+#include <LiquidCrystal_I2C.h>
+LiquidCrystal_I2C lcd (0x27,16,2);
+
 //Use only core 1 
 #if CONFIG_FREERTOS_UNICORE
 static const BaseType_t app_cpu = 0;
@@ -6,7 +12,7 @@ static const BaseType_t app_cpu = 1;
 #endif
 
 //Pins
-static const int soilMoisture = 28;
+static const int soilMoisture = 25;
 static const int pirSensor = 27;
 static const int gasSensor = 26;
 static const int buzzer = 2;
@@ -20,17 +26,36 @@ boolean startTimer = false;       //starts timer when motion is detected
 
 //Our task: measure soil moisture
 void measureMoisture(void *parameter){
-  while(1){
-    Serial.println("Moisture:");
-    Serial.print(analogRead(soilMoisture));
+  
+   while(1){
+
+    if(xSemaphoreTake(xMutex, 0xFFFF)==1){
+    Serial.print("Moisture:");
+    Serial.println(analogRead(soilMoisture));
+    xSemaphoreGive(xMutex);
+    lcd.setCursor(0,0);   /*Set cursor to Row 1*/
+    lcd.print("Moisture:"); 
+    lcd.print(analogRead(soilMoisture)); /*print text on LCD*/
   }
+  vTaskDelay(500/portTICK_PERIOD_MS);
+  }
+  
 }
 
 //Our task: measure gas detect
 void gasDetect(void *parameter){
-  while(1){
-    Serial.println("Gas:");
-    Serial.print(analogRead(gasSensor));
+ 
+   while(1){
+
+     if(xSemaphoreTake(xMutex, 0xFFFF)==1){
+    Serial.print("Gas:");
+    Serial.println(analogRead(gasSensor));
+    xSemaphoreGive(xMutex);
+    lcd.setCursor(0,1);   /*set cursor on row 2*/
+    lcd.print("Gas:"); 
+    lcd.print(analogRead(gasSensor));
+  }
+  vTaskDelay(500/portTICK_PERIOD_MS);
   }
 }
 
@@ -54,16 +79,21 @@ void detectMovement(){
 
 void setup() {
   pinMode(soilMoisture,INPUT);
-  pinMode(gasSensor, INPUT_PULLUP);
+  pinMode(gasSensor, INPUT);
   pinMode(pirSensor, INPUT_PULLUP); 
   
+    // Initialize the LCD connected 
+  lcd.init();
+  // Turn on the backlight on LCD. 
+  lcd.backlight();
+
   pinMode(buzzer, OUTPUT);
   digitalWrite(buzzer, LOW);
 
   xTaskCreatePinnedToCore(
     measureMoisture,
     "Measure soil moisture",
-    1024,
+    2048,
     NULL,
     1,
     NULL,
@@ -72,7 +102,7 @@ void setup() {
     xTaskCreatePinnedToCore(
     gasDetect,
     "Detect Gases",
-    1024,
+    2048,
     NULL,
     1,
     NULL,
