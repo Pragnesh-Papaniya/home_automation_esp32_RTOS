@@ -13,8 +13,8 @@ static const BaseType_t app_cpu = 1;
 
 //Pins
 static const int soilMoisture = 25;
-static const int pirSensor = 27;
 static const int gasSensor = 26;
+static const int pirSensor = 27;
 static const int buzzer = 2;
 
 #define timeSeconds 10
@@ -28,14 +28,16 @@ boolean startTimer = false;       //starts timer when motion is detected
 void measureMoisture(void *parameter){
   
    while(1){
-
-    if(xSemaphoreTake(xMutex, 0xFFFF)==1){
+  if (soilMoisture<300){
+    if(xSemaphoreTake(xMutex, 0)==1){
     Serial.print("Moisture:");
     Serial.println(analogRead(soilMoisture));
-    xSemaphoreGive(xMutex);
     lcd.setCursor(0,0);   /*Set cursor to Row 1*/
-    lcd.print("Moisture:"); 
-    lcd.print(analogRead(soilMoisture)); /*print text on LCD*/
+    // lcd.print("Moisture:"); 
+    // lcd.print(analogRead(soilMoisture)); /*print text on LCD*/
+    lcd.print("Water Pump ON");
+    xSemaphoreGive(xMutex);
+  }
   }
   vTaskDelay(500/portTICK_PERIOD_MS);
   }
@@ -46,28 +48,50 @@ void measureMoisture(void *parameter){
 void gasDetect(void *parameter){
  
    while(1){
-
-     if(xSemaphoreTake(xMutex, 0xFFFF)==1){
+    if(gasSensor>300){
+     if(xSemaphoreTake(xMutex, 0)==1){
     Serial.print("Gas:");
     Serial.println(analogRead(gasSensor));
-    xSemaphoreGive(xMutex);
     lcd.setCursor(0,1);   /*set cursor on row 2*/
-    lcd.print("Gas:"); 
-    lcd.print(analogRead(gasSensor));
+    lcd.print("Windows Opening"); 
+    // lcd.print(analogRead(gasSensor));
+    xSemaphoreGive(xMutex);
+   }
   }
   vTaskDelay(500/portTICK_PERIOD_MS);
   }
 }
+
+
+// //Our task: measure gas detect
+// void thirdTask(void *parameter){
+ 
+//   while(1){
+//     if(xSemaphoreTake(xMutex, 0)==1){
+//     lcd.clear();
+//     lcd.setCursor(0,0);   /*set cursor on row 2*/
+//     lcd.print("third "); 
+//     lcd.print("task");
+//     xSemaphoreGive(xMutex);}
+//   vTaskDelay(500/portTICK_PERIOD_MS);
+//   }
+// }
+
+
 
 //IRAM_ATTR: to detect movement
 void detectMovement(){
   digitalWrite(buzzer, HIGH);
   startTimer = true;
   lastTrigger = millis();
+  
+  lcd.clear();
+  lcd.setCursor(0,1);   /*set cursor on row 2*/
+  lcd.print("Intruder"); 
 
   Serial.println("Detected");
 
-     currentTime = millis();
+  currentTime = millis();
 
   if((startTimer)&&(currentTime - lastTrigger>(timeSeconds*1000))){
     digitalWrite(buzzer, LOW);
@@ -76,6 +100,9 @@ void detectMovement(){
     startTimer = false;
   }
 }
+
+
+
 
 void setup() {
   pinMode(soilMoisture,INPUT);
@@ -90,6 +117,7 @@ void setup() {
   pinMode(buzzer, OUTPUT);
   digitalWrite(buzzer, LOW);
 
+  xMutex = xSemaphoreCreateMutex();
   xTaskCreatePinnedToCore(
     measureMoisture,
     "Measure soil moisture",
@@ -107,6 +135,15 @@ void setup() {
     1,
     NULL,
     app_cpu);
+
+    // xTaskCreatePinnedToCore(
+    // thirdTask,
+    // "Task 3",
+    // 5000,
+    // NULL,
+    // 1,
+    // NULL,
+    // app_cpu);
 
   attachInterrupt(digitalPinToInterrupt(pirSensor), detectMovement, RISING);   //(pin,function,mode)
 
