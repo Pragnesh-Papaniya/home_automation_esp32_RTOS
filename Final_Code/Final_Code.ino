@@ -8,6 +8,7 @@ write following content in it:
 #define SECRET_CH_ID 0000000			// replace 0000000 with your channel number
 #define SECRET_WRITE_APIKEY "XYZ"   // replace XYZ with your channel write API Key
 */
+
 static SemaphoreHandle_t mutex;
 
 #if CONFIG_FREERTOS_UNICORE
@@ -19,6 +20,8 @@ static SemaphoreHandle_t mutex;
 #define FlamePin 2
 #define DhtPin 15
 #define BuzzPin 23
+#define soilMoisture 27
+#define gasSensor 25
 
 #include <LiquidCrystal_I2C.h>  // download LCD I2C library first
 #include <DHT.h>
@@ -33,46 +36,53 @@ char ssid[] = SECRET_SSID;           // your network SSID (name)
 char pass[] = SECRET_PASS;           // your network password
 int keyIndex = 0;                    // your network key Index number (needed only for WEP)
 
-unsigned long myChannelNumber = SECRET_CH_ID;
-const char *myWriteAPIKey = SECRET_WRITE_APIKEY;
+unsigned long myChannelNumber = SECRET_CH_ID;     // thingSpeak channel ID
+const char *myWriteAPIKey = SECRET_WRITE_APIKEY;  // thingSpeak write API key
 
 //whatever fields you have to send to thingspeak, make it global so it doesn't go out of scope
 unsigned short dist;      // distance by TOF sensor
 unsigned short humidity;  // For DHT11
 unsigned char temp;       // For DHT11
 
-DHT dht(DhtPin, DHT11);
-Adafruit_VL53L0X lox = Adafruit_VL53L0X();  //TOF and LCD have different I2C address
+DHT dht(DhtPin, DHT11);                     // DHT11 instance
+Adafruit_VL53L0X lox = Adafruit_VL53L0X();  // TOF and LCD have different I2C address
 WiFiClient client;
 
 void IRAM_ATTR FlameIsr();  // Flame Isr declaration.
+void detectMovement();      // PIR Isr declaration.
 
 void setup() {  //setup task runs at priority 1
   pinMode(FlamePin, INPUT);
+  pinMode(soilMoisture, INPUT);
+  pinMode(gasSensor, INPUT);
   pinMode(BuzzPin, OUTPUT);
-  lcd.begin();
   dht.begin();
-  vTaskDelay(2000 / portTICK_PERIOD_MS);
+  lcd.init();
   WiFi.mode(WIFI_STA);
-  ThingSpeak.begin(client);  // Initialize ThingSpeak
+  vTaskDelay(2000 / portTICK_PERIOD_MS);  // 2 sec delay to properly boot DHT
+  ThingSpeak.begin(client);               // Initialize ThingSpeak
 
   // Create mutex before starting tasks
   mutex = xSemaphoreCreateMutex();
 
-  xTaskCreatePinnedToCore(Task_DHT11, "Task_DHT11", 2024, NULL, 1, NULL, ARDUINO_RUNNING_CORE);
-  xTaskCreatePinnedToCore(Task_TOF, "Task_TOF", 2024, NULL, 1, NULL, ARDUINO_RUNNING_CORE);
-  xTaskCreatePinnedToCore(Task_THINGSPEAK, "Task_THINGSPEAK", 2024, NULL, 1, NULL, ARDUINO_RUNNING_CORE);
-  attachInterrupt(FlamePin, FlameIsr, CHANGE);  // go to isr whenever level changes
+  xTaskCreatePinnedToCore(Task_DHT11, "Task_DHT11", 2048, NULL, 1, NULL, ARDUINO_RUNNING_CORE);
+  xTaskCreatePinnedToCore(Task_TOF, "Task_TOF", 2048, NULL, 1, NULL, ARDUINO_RUNNING_CORE);
+  xTaskCreatePinnedToCore(measureMoisture, "Measure soil moisture", 2048, NULL, 1, NULL, ARDUINO_RUNNING_CORE);
+  xTaskCreatePinnedToCore(gasDetect, "Detect Gases", 2048, NULL, 1, NULL, ARDUINO_RUNNING_CORE);
+  xTaskCreatePinnedToCore(Task_THINGSPEAK, "Task_THINGSPEAK", 2048, NULL, 1, NULL, ARDUINO_RUNNING_CORE);
+  attachInterrupt(FlamePin, FlameIsr, CHANGE);                                // go to isr whenever level changes
+  attachInterrupt(digitalPinToInterrupt(pirSensor), detectMovement, RISING);  //(pin,function,mode)
 
   // Delete "setup" task
   vTaskDelete(NULL);
 }
 
 void loop() {
-  // Delete "loop" task
+  // Delete "loop" task so it never runs again
   vTaskDelete(NULL);
 }
 
+//////////////////////////////////////////////////////////////////////////////
 void Task_DHT11(void *pvParameters)  // This is a DHT task.
 {
   (void)pvParameters;
@@ -83,18 +93,15 @@ void Task_DHT11(void *pvParameters)  // This is a DHT task.
     humidity = dht.readHumidity();
     // take mutex before entering critical section of lcd
     if (xSemaphoreTake(mutex, 0) == pdTRUE) {
-      lcd.setCursor(0, 0);
+      lcd.setCursor(0, 0);            /*set cursor on row 1*/
+      lcd.print("                ");  // clear that row
       lcd.print("Tmp ");
-      lcd.setCursor(4, 0);
       lcd.print(temp);
-      lcd.setCursor(6, 0);
       lcd.print("c  ");
-      lcd.setCursor(8, 0);
       lcd.print("hmd ");
-      lcd.setCursor(12, 0);
       lcd.print(humidity);
-      lcd.setCursor(14, 0);
       lcd.print("%");
+      vTaskDelay(5000 / portTICK_PERIOD_MS);
       xSemaphoreGive(mutex);  // give back mutex once task has completed work with critical section
     }
     vTaskDelay(2000 / portTICK_PERIOD_MS);
@@ -128,19 +135,53 @@ void Task_TOF(void *pvParameters)  // This is a TOF task.
 
       // take mutex before entering critical section of lcd
       if (xSemaphoreTake(mutex, 0) == pdTRUE) {
-        lcd.setCursor(0, 1);
+        lcd.setCursor(0, 1);            /*set cursor on row 2*/
+        lcd.print("                ");  // clear that row
         lcd.print("Dist (mm): ");
         dist = measure.RangeMilliMeter;
-        lcd.setCursor(12, 1);
         lcd.print(dist);
+        vTaskDelay(5000 / portTICK_PERIOD_MS);
         xSemaphoreGive(mutex);  // give back mutex once task has completed work with critical section
       }
     } else {
       // take mutex before entering critical section of lcd
       if (xSemaphoreTake(mutex, 0) == pdTRUE) {
+        lcd.setCursor(0, 1);            /*set cursor on row 2*/
+        lcd.print("                ");  // clear that row
         lcd.print(" out of range ");
         xSemaphoreGive(mutex);  // give back mutex once task has completed work with critical section
       }
+    }
+    vTaskDelay(2000 / portTICK_PERIOD_MS);
+  }
+}
+
+void measureMoisture(void *parameter) {
+
+  while (1) {
+    if (xSemaphoreTake(mutex, 0) == 1) {
+      lcd.setCursor(0, 0);            /*set cursor on row 2*/
+      lcd.print("                ");  // clear that row
+      lcd.print("Moisture:");
+      lcd.println(analogRead(soilMoisture));
+      vTaskDelay(5000 / portTICK_PERIOD_MS);  // Wait .5 seconds to clearly see output
+      xSemaphoreGive(mutex);
+    }
+    vTaskDelay(2000 / portTICK_PERIOD_MS);
+  }
+}
+
+//Our task: measure gas detect
+void gasDetect(void *parameter) {
+
+  while (1) {
+    if (xSemaphoreTake(mutex, 0) == 1) {
+      lcd.setCursor(0, 1);            /*set cursor on row 2*/
+      lcd.print("                ");  // clear that row
+      lcd.print("Gas:");
+      lcd.println(analogRead(gasSensor));
+      vTaskDelay(5000 / portTICK_PERIOD_MS);  // Wait 5 seconds to clearly see output
+      xSemaphoreGive(mutex);
     }
     vTaskDelay(2000 / portTICK_PERIOD_MS);
   }
@@ -221,5 +262,26 @@ void IRAM_ATTR FlameIsr()  // flame isr that is to be executed
     digitalWrite(BuzzPin, HIGH);
   } else {
     digitalWrite(BuzzPin, LOW);
+  }
+}
+
+void detectMovement() {
+  digitalWrite(buzzer, HIGH);
+  startTimer = true;
+  lastTrigger = millis();
+
+  lcd.clear();
+  lcd.setCursor(0, 1); /*set cursor on row 2*/
+  lcd.print("Intruder");
+
+  Serial.println("Detected");
+
+  currentTime = millis();
+
+  if ((startTimer) && (currentTime - lastTrigger > (timeSeconds * 1000))) {
+    digitalWrite(buzzer, LOW);
+    Serial.println("Motion Stopped");
+
+    startTimer = false;
   }
 }
